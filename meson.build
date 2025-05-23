@@ -26,6 +26,16 @@ if MSVC
     add_project_arguments('/utf-8', language: 'cpp')
 endif
 
+if get_option('mpv')
+    mpv = declare_dependency(
+        link_args: ['-L' + meson.current_source_dir() + '/lib', '-lmpv'],
+        include_directories: include_directories('include')
+    )
+    deps += mpv
+    add_project_arguments('-DMPV=1', language: 'c')
+    add_project_arguments('-DMPV=1', language: 'cpp')
+endif
+
 shared_library('d3d9',
     files(['dllmain.cpp', 'proxy.h', 'proxy.cpp', 'vfs.hpp', 'vfs.cpp', 'm3t.h', 'm3t.cpp']),
     dependencies: deps,

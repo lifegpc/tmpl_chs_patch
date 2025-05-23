@@ -10,6 +10,10 @@
 #include <regex>
 #include <utility>
 #include <vector>
+#include <stdint.h>
+#if MPV
+#include "mpv/client.h"
+#endif
 
 static decltype(CreateFontIndirectA)* TrueCreateFontIndirectA = CreateFontIndirectA;
 static HANDLE(WINAPI* TrueCreateFileW)(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile) = CreateFileW;
@@ -29,11 +33,137 @@ static decltype(RegOpenKeyExA)* TrueRegOpenKeyExA = RegOpenKeyExA;
 static decltype(RegCloseKey)* TrueRegCloseKey = RegCloseKey;
 static decltype(RegQueryValueExA)* TrueRegQueryValueExA = RegQueryValueExA;
 
+#if MPV
+typedef HRESULT(__cdecl *OpenMedia)(LPCCH video);
+typedef LPVOID(*ReleaseMedia)();
+#endif
+
 static VFS vfs;
 static std::wstring wTitle;
 static std::unordered_map<std::wstring, std::wstring> dialogMap;
 static std::vector<std::pair<std::wregex, std::wstring>> dialogReList;
 static std::unordered_set<HKEY> phkSet;
+
+#if MPV
+static OpenMedia OpenMediaFunc = nullptr;
+static ReleaseMedia ReleaseMediaFunc = nullptr;
+static mpv_handle* player = NULL;
+static HANDLE hThread = NULL;
+static bool stopThread = false;
+
+OpenMedia GetOpenMedia() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (OpenMedia)((char*)hModule + 0x53790);
+}
+
+ReleaseMedia GetReleaseMedia() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (ReleaseMedia)((char*)hModule + 0x53480);
+}
+
+HWND* GetHwndPointer() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (HWND*)((char*)hModule + 0xf9848);
+}
+
+DWORD* GetPlayStatus() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (DWORD*)((char*)hModule + 0xf9844);
+}
+
+DWORD WINAPI ThreadHandle(LPVOID data) {
+    while (1) {
+        if (stopThread) {
+            hThread = NULL;
+            return 0;
+        }
+        mpv_event* event = mpv_wait_event(player, 0);
+        if (event && event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
+            mpv_event_property* prop = (mpv_event_property*)event->data;
+            if (strcmp(prop->name, "core-idle") == 0) {
+                bool* idle = (bool*)prop->data;
+                *GetPlayStatus() = *idle ? 1 : 0;
+            }
+        }
+        Sleep(10);
+    }
+}
+
+HRESULT __cdecl HookedOpenMedia(LPCCH video) {
+    if (player) {
+        mpv_terminate_destroy(player);
+        player = NULL;
+    }
+    player = mpv_create();
+    if (!player) {
+        return E_FAIL;
+    }
+    int err = mpv_initialize(player);
+    if (err) {
+        return E_FAIL;
+    }
+    HWND hwnd = *GetHwndPointer();
+    int64_t wid = (int64_t)(uint32_t)hwnd;
+    mpv_set_option(player, "wid", MPV_FORMAT_INT64, &wid);
+    mpv_set_option_string(player, "config", "no");
+    mpv_set_option_string(player, "input-default-bindings", "no");
+    mpv_set_option_string(player, "hwdec", "auto");
+    mpv_set_option_string(player, "auto-window-resize", "no");
+    mpv_set_option_string(player, "log-file", "mpv.log");
+    const char* cmd[] = { "loadfile", video, nullptr };
+    err = mpv_command(player, cmd);
+    if (err) {
+        return E_FAIL;
+    }
+    while (1) {
+        mpv_event* event = mpv_wait_event(player, 10);
+        if (event->event_id == MPV_EVENT_FILE_LOADED) {
+            break;
+        }
+        if (event->event_id == MPV_EVENT_SHUTDOWN) {
+            return E_FAIL;
+        }
+    }
+    const char* play_cmd[] = { "set", "pause", "no", NULL };
+    err = mpv_command(player, play_cmd);
+    if (err) {
+        return E_FAIL;
+    }
+    while (1) {
+        int64_t idle = 0;
+        if (mpv_get_property(player, "core-idle", MPV_FORMAT_FLAG, &idle) < 0) {
+            return E_FAIL;
+        }
+        if (!idle) {
+            break;
+        }
+        Sleep(10);
+    }
+    *GetPlayStatus() = 0;
+    mpv_observe_property(player, 0, "core-idle", MPV_FORMAT_FLAG);
+    stopThread = false;
+    hThread = CreateThread(NULL, 0, ThreadHandle, NULL, 0, NULL);
+    if (hThread == NULL) {
+        mpv_terminate_destroy(player);
+        player = NULL;
+        return E_FAIL;
+    }
+    return S_OK;
+}
+
+LPVOID HookedReleaseVideo() {
+    stopThread = true;
+    while (hThread) {
+        Sleep(10);
+    }
+    if (player) {
+        mpv_terminate_destroy(player);
+        player = NULL;
+    }
+    return NULL;
+}
+
+#endif
 
 HFONT WINAPI HookedCreateFontIndirectA(CONST LOGFONTA* lplf) {
     if (lplf && lplf->lfFaceName) {
@@ -235,8 +365,15 @@ void Attach() {
         std::string fName = fileop::filename(tmp) + ".dat";
         vfs.AddArchive(fName);
     }
+    vfs.AddArchive("video.dat");
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
+#if MPV
+    OpenMediaFunc = GetOpenMedia();
+    ReleaseMediaFunc = GetReleaseMedia();
+    DetourAttach(&OpenMediaFunc, HookedOpenMedia);
+    DetourAttach(&ReleaseMediaFunc, HookedReleaseVideo);
+#endif
     DetourAttach(&TrueCreateFontIndirectA, HookedCreateFontIndirectA);
     DetourAttach(&TrueCreateFileW, HookedCreateFileW);
     DetourAttach(&TrueReadFile, HookedReadFile);
@@ -289,7 +426,7 @@ void Attach() {
                         }
                         errMsg += L"\n";
                         errMsg += ori;
-                        MessageBoxW(NULL, L"Regex error", L"Error", MB_OK | MB_ICONERROR);
+                        MessageBoxW(NULL, errMsg.c_str(), L"Error", MB_OK | MB_ICONERROR);
                     }
                     continue;
                 }
@@ -302,6 +439,10 @@ void Attach() {
 void Detach() {
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
+#if MPV
+    DetourDetach(&OpenMediaFunc, HookedOpenMedia);
+    DetourDetach(&ReleaseMediaFunc, HookedReleaseVideo);
+#endif
     DetourDetach(&TrueCreateFontIndirectA, HookedCreateFontIndirectA);
     DetourDetach(&TrueCreateFileW, HookedCreateFileW);
     DetourDetach(&TrueReadFile, HookedReadFile);
