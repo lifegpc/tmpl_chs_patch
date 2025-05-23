@@ -1,0 +1,13 @@
+[wrap-file]
+directory = libzip-1.11.3
+
+source_url = https://github.com/nih-at/libzip/releases/download/v1.11.3/libzip-1.11.3.tar.gz
+source_filename = libzip-1.11.3.tar.gz
+source_hash = 76653f135dde3036036c500e11861648ffbf9e1fc5b233ff473c60897d9db0ea
+patch_url = https://github.com/lifegpc/libzip-meson/releases/download/v1.11.3-2/libzip-1.11.3.zip
+patch_filename = libzip-1.11.3-2-patch.zip
+patch_hash = 31c84735a300445628edfd3988a0fea88753a0aaf3fe6f97fab64cacfb1e5b6b
+wrapdb_version = 1.11.3-2
+
+[provide]
+libzip = libzip_dep
