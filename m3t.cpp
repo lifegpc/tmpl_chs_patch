@@ -51,5 +51,6 @@ M3tFile::M3tFile(std::wstring path) {
         }
     }
     free_file_reader(reader);
+    free_cmemfile(mem);
     delete[] buf;
 }

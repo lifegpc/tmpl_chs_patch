@@ -37,7 +37,7 @@ if get_option('mpv')
 endif
 
 shared_library('d3d9',
-    files(['dllmain.cpp', 'proxy.h', 'proxy.cpp', 'vfs.hpp', 'vfs.cpp', 'm3t.h', 'm3t.cpp']),
+    files(['dllmain.cpp', 'proxy.h', 'proxy.cpp', 'vfs.hpp', 'vfs.cpp', 'm3t.h', 'm3t.cpp', 'strings_dat.h', 'strings_dat.cpp']),
     dependencies: deps,
     name_prefix: '',
     vs_module_defs: 'exports.def',

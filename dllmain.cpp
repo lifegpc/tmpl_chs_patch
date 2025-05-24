@@ -14,6 +14,7 @@
 #if MPV
 #include "mpv/client.h"
 #endif
+#include "strings_dat.h"
 
 static decltype(CreateFontIndirectA)* TrueCreateFontIndirectA = CreateFontIndirectA;
 static HANDLE(WINAPI* TrueCreateFileW)(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile) = CreateFileW;
@@ -33,6 +34,7 @@ static decltype(RegOpenKeyExA)* TrueRegOpenKeyExA = RegOpenKeyExA;
 static decltype(RegCloseKey)* TrueRegCloseKey = RegCloseKey;
 static decltype(RegQueryValueExA)* TrueRegQueryValueExA = RegQueryValueExA;
 
+typedef int(__thiscall *DrawTextOn)(void* thisptr, int a, int b, int c, const char* buffer);
 #if MPV
 typedef HRESULT(__cdecl *OpenMedia)(LPCCH video);
 typedef LPVOID(*ReleaseMedia)();
@@ -43,7 +45,10 @@ static std::wstring wTitle;
 static std::unordered_map<std::wstring, std::wstring> dialogMap;
 static std::vector<std::pair<std::wregex, std::wstring>> dialogReList;
 static std::unordered_set<HKEY> phkSet;
+static std::unordered_map<std::string, std::string> stringsMap;
 
+static decltype(sprintf)* sprintfFunc = nullptr;
+static DrawTextOn DrawTextOnFunc = nullptr;
 #if MPV
 static OpenMedia OpenMediaFunc = nullptr;
 static ReleaseMedia ReleaseMediaFunc = nullptr;
@@ -164,6 +169,60 @@ LPVOID HookedReleaseVideo() {
 }
 
 #endif
+
+decltype(sprintf)* GetSprintf() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (decltype(sprintf)*)((char*)hModule + 0x5bd74);
+}
+
+DrawTextOn GetDrawTextOn() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (DrawTextOn)((char*)hModule + 0x36600);
+}
+
+int __cdecl HookedSprintf(char* buffer, const char* format, ...) {
+    va_list args;
+    if (!strcmp(format, "@i%s   ")) {
+        va_list args;
+        va_start(args, format);
+        const char* str = va_arg(args, const char*);
+        va_end(args);
+        std::string s(str);
+        auto find = stringsMap.find(s);
+        if (find != stringsMap.end()) {
+            s = find->second;
+        }
+        return sprintf(buffer, "@i%s", s.c_str());
+    } else if (!strcmp(format, "%s  ")) {
+        va_list args;
+        va_start(args, format);
+        const char* str = va_arg(args, const char*);
+        va_end(args);
+        std::string s(str);
+        auto find = stringsMap.find(s);
+        if (find != stringsMap.end()) {
+            s = find->second;
+        }
+        return sprintf(buffer, "%s", s.c_str());
+    }
+    va_start(args, format);
+    int ret = vsprintf(buffer, format, args);
+    va_end(args);
+    return ret;
+}
+
+int __fastcall HookedDrawTextOn(void* thisptr, void* edx, int a, int b, int c, const char* buffer) {
+    if (!strncmp(buffer, "@i", 2)) {
+        std::string s(buffer + 2);
+        auto find = stringsMap.find(s);
+        if (find != stringsMap.end()) {
+            s = find->second;
+        }
+        s = "@i" + s;
+        return DrawTextOnFunc(thisptr, a, b, c, s.c_str());
+    }
+    return DrawTextOnFunc(thisptr, a, b, c, buffer);
+}
 
 HFONT WINAPI HookedCreateFontIndirectA(CONST LOGFONTA* lplf) {
     if (lplf && lplf->lfFaceName) {
@@ -374,6 +433,10 @@ void Attach() {
     DetourAttach(&OpenMediaFunc, HookedOpenMedia);
     DetourAttach(&ReleaseMediaFunc, HookedReleaseVideo);
 #endif
+    sprintfFunc = GetSprintf();
+    DrawTextOnFunc = GetDrawTextOn();
+    DetourAttach(&sprintfFunc, HookedSprintf);
+    DetourAttach(&(PVOID&)DrawTextOnFunc, HookedDrawTextOn);
     DetourAttach(&TrueCreateFontIndirectA, HookedCreateFontIndirectA);
     DetourAttach(&TrueCreateFileW, HookedCreateFileW);
     DetourAttach(&TrueReadFile, HookedReadFile);
@@ -434,6 +497,12 @@ void Attach() {
             }
         }
     }
+    StringsDat sDat(L"strings.dat");
+    if (!sDat.hasError) {
+        for (auto i = 0; i < sDat.strings.size(); i += 2) {
+            stringsMap[sDat.strings[i]] = sDat.strings[i + 1];
+        }
+    }
 }
 
 void Detach() {
@@ -443,6 +512,8 @@ void Detach() {
     DetourDetach(&OpenMediaFunc, HookedOpenMedia);
     DetourDetach(&ReleaseMediaFunc, HookedReleaseVideo);
 #endif
+    DetourDetach(&sprintfFunc, HookedSprintf);
+    DetourDetach(&(PVOID&)DrawTextOnFunc, HookedDrawTextOn);
     DetourDetach(&TrueCreateFontIndirectA, HookedCreateFontIndirectA);
     DetourDetach(&TrueCreateFileW, HookedCreateFileW);
     DetourDetach(&TrueReadFile, HookedReadFile);
