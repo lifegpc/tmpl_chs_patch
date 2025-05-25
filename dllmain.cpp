@@ -15,6 +15,8 @@
 #include "mpv/client.h"
 #endif
 #include "strings_dat.h"
+#include "zlib.h"
+#include "zstd.h"
 
 static decltype(CreateFontIndirectA)* TrueCreateFontIndirectA = CreateFontIndirectA;
 static HANDLE(WINAPI* TrueCreateFileW)(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile) = CreateFileW;
@@ -35,6 +37,7 @@ static decltype(RegCloseKey)* TrueRegCloseKey = RegCloseKey;
 static decltype(RegQueryValueExA)* TrueRegQueryValueExA = RegQueryValueExA;
 
 typedef int(__thiscall *DrawTextOn)(void* thisptr, int a, int b, int c, const char* buffer);
+typedef int(__cdecl* Decompress)(void* dest, int* destLen, const void* source, int sourceLen);
 #if MPV
 typedef HRESULT(__cdecl *OpenMedia)(LPCCH video);
 typedef LPVOID(*ReleaseMedia)();
@@ -49,6 +52,7 @@ static std::unordered_map<std::string, std::string> stringsMap;
 
 static decltype(sprintf)* sprintfFunc = nullptr;
 static DrawTextOn DrawTextOnFunc = nullptr;
+static Decompress DecompressFunc = nullptr;
 #if MPV
 static OpenMedia OpenMediaFunc = nullptr;
 static ReleaseMedia ReleaseMediaFunc = nullptr;
@@ -180,6 +184,11 @@ DrawTextOn GetDrawTextOn() {
     return (DrawTextOn)((char*)hModule + 0x36600);
 }
 
+Decompress GetDecompress() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (Decompress)((char*)hModule + 0x73f70);
+}
+
 int __cdecl HookedSprintf(char* buffer, const char* format, ...) {
     va_list args;
     if (!strcmp(format, "@i%s   ")) {
@@ -222,6 +231,39 @@ int __fastcall HookedDrawTextOn(void* thisptr, void* edx, int a, int b, int c, c
         return DrawTextOnFunc(thisptr, a, b, c, s.c_str());
     }
     return DrawTextOnFunc(thisptr, a, b, c, buffer);
+}
+
+int __cdecl HookedDecompress(void* dest, int* destLen, const void* source, int sourceLen) {
+    if (dest && destLen && source && sourceLen > 0) {
+        if (((const char*)source)[0] != 0x28) {
+            z_stream stream = { 0 };
+            stream.next_in = (Bytef*)source;
+            stream.avail_in = sourceLen;
+            stream.next_out = (Bytef*)dest;
+            stream.avail_out = *destLen;
+            int ret = inflateInit(&stream);
+            if (ret != Z_OK) {
+                return ret;
+            }
+            ret = inflate(&stream, Z_FINISH);
+            if (ret != Z_STREAM_END) {
+                inflateEnd(&stream);
+                return ret;
+            }
+            *destLen = stream.total_out;
+            inflateEnd(&stream);
+            return Z_OK;
+        } else {
+            size_t compressed = ZSTD_decompress(dest, *destLen, source, sourceLen);
+            if (ZSTD_isError(compressed)) {
+                return Z_DATA_ERROR;
+            }
+            *destLen = compressed;
+            return Z_OK;
+        }
+    }
+    
+    return Z_STREAM_ERROR;
 }
 
 HFONT WINAPI HookedCreateFontIndirectA(CONST LOGFONTA* lplf) {
@@ -435,8 +477,10 @@ void Attach() {
 #endif
     sprintfFunc = GetSprintf();
     DrawTextOnFunc = GetDrawTextOn();
+    DecompressFunc = GetDecompress();
     DetourAttach(&sprintfFunc, HookedSprintf);
     DetourAttach(&(PVOID&)DrawTextOnFunc, HookedDrawTextOn);
+    DetourAttach(&DecompressFunc, HookedDecompress);
     DetourAttach(&TrueCreateFontIndirectA, HookedCreateFontIndirectA);
     DetourAttach(&TrueCreateFileW, HookedCreateFileW);
     DetourAttach(&TrueReadFile, HookedReadFile);
@@ -514,6 +558,7 @@ void Detach() {
 #endif
     DetourDetach(&sprintfFunc, HookedSprintf);
     DetourDetach(&(PVOID&)DrawTextOnFunc, HookedDrawTextOn);
+    DetourDetach(&DecompressFunc, HookedDecompress);
     DetourDetach(&TrueCreateFontIndirectA, HookedCreateFontIndirectA);
     DetourDetach(&TrueCreateFileW, HookedCreateFileW);
     DetourDetach(&TrueReadFile, HookedReadFile);

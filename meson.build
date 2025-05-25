@@ -5,17 +5,20 @@ zlib = subproject('zlib', required: true)
 libzip = subproject('libzip', required: true)
 utils = subproject('utils', required: true)
 detours = subproject('detours', required: true)
+zstd = subproject('zstd', required: true)
 
 zlib_dep = zlib.get_variable('zlib_dep')
 libzip_dep = libzip.get_variable('libzip_dep')
 utils_dep = utils.get_variable('utils_dep')
 detours_dep = detours.get_variable('detours_dep')
+zstd_dep = zstd.get_variable('libzstd_dep')
 
 deps = [
     zlib_dep,
     libzip_dep,
     utils_dep,
     detours_dep,
+    zstd_dep,
 ]
 
 cc = meson.get_compiler('c')
@@ -41,4 +44,5 @@ shared_library('d3d9',
     dependencies: deps,
     name_prefix: '',
     vs_module_defs: 'exports.def',
+    link_args: ['/NODEFAULTLIB:MSVCRT.lib']
 )
