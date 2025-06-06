@@ -17,6 +17,9 @@
 #include "strings_dat.h"
 #include "zlib.h"
 #include "zstd.h"
+#if ASS
+#include "ass_render.h"
+#endif
 
 static decltype(CreateFontIndirectA)* TrueCreateFontIndirectA = CreateFontIndirectA;
 static HANDLE(WINAPI* TrueCreateFileW)(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile) = CreateFileW;
@@ -42,6 +45,10 @@ typedef int(__cdecl* Decompress)(void* dest, int* destLen, const void* source, i
 typedef HRESULT(__cdecl *OpenMedia)(LPCCH video);
 typedef LPVOID(*ReleaseMedia)();
 #endif
+#if ASS
+typedef int(__thiscall* OpenAudio)(void* thisptr, char* audioName, int index);
+typedef int(__thiscall* StopAudio)(void* thisptr, int index);
+#endif
 
 static VFS vfs;
 static std::wstring wTitle;
@@ -53,6 +60,11 @@ static std::unordered_map<std::string, std::string> stringsMap;
 static decltype(sprintf)* sprintfFunc = nullptr;
 static DrawTextOn DrawTextOnFunc = nullptr;
 static Decompress DecompressFunc = nullptr;
+#if ASS
+static OpenAudio OpenAudioFunc = nullptr;
+static StopAudio StopAudioFunc = nullptr;
+static int bgm_index = -1;
+#endif
 #if MPV
 static OpenMedia OpenMediaFunc = nullptr;
 static ReleaseMedia ReleaseMediaFunc = nullptr;
@@ -119,6 +131,7 @@ HRESULT __cdecl HookedOpenMedia(LPCCH video) {
     mpv_set_option_string(player, "hwdec", "auto");
     mpv_set_option_string(player, "auto-window-resize", "no");
     mpv_set_option_string(player, "log-file", "mpv.log");
+    mpv_set_option_string(player, "sub-fonts-dir", "fonts");
     const char* cmd[] = { "loadfile", video, nullptr };
     err = mpv_command(player, cmd);
     if (err) {
@@ -265,6 +278,55 @@ int __cdecl HookedDecompress(void* dest, int* destLen, const void* source, int s
     
     return Z_STREAM_ERROR;
 }
+
+#if ASS
+OpenAudio GetOpenAudio() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (OpenAudio)((char*)hModule + 0x3cb20);
+}
+
+StopAudio GetStopAudio() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (StopAudio)((char*)hModule + 0x3c550);
+}
+
+HWND FindWindowInCurrentProcess(LPCWSTR className) {
+    DWORD currentProcessId = GetCurrentProcessId();
+    HWND hwnd = NULL;
+
+    // 遍历所有窗口
+    while ((hwnd = FindWindowExW(NULL, hwnd, className, NULL)) != NULL) {
+        DWORD processId;
+        GetWindowThreadProcessId(hwnd, &processId);
+
+        // 检查是否属于当前进程
+        if (processId == currentProcessId) {
+            return hwnd;
+        }
+    }
+
+    return NULL;
+}
+
+int __fastcall HookedOpenAudio(void* thisptr, void* edx, char* audioName, int index) {
+    auto re = OpenAudioFunc(thisptr, audioName, index);
+    if (!strcmp(audioName, "music\\033") && re) {
+        auto hwnd = FindWindowInCurrentProcess(L"TMPL_WIN_Class");
+        bgm_index = index;
+        StartPlaySubtitle(hwnd, "ED.ass");
+    }
+    return re;
+}
+
+int __fastcall HookedStopAudio(void* thisptr, void* edx, int index) {
+    auto re = StopAudioFunc(thisptr, index);
+    if (bgm_index == index && re >= 0) {
+        StopSubtitle();
+        bgm_index = -1;
+    }
+    return re;
+}
+#endif
 
 HFONT WINAPI HookedCreateFontIndirectA(CONST LOGFONTA* lplf) {
     if (lplf && lplf->lfFaceName) {
@@ -481,6 +543,12 @@ void Attach() {
     DetourAttach(&sprintfFunc, HookedSprintf);
     DetourAttach(&(PVOID&)DrawTextOnFunc, HookedDrawTextOn);
     DetourAttach(&DecompressFunc, HookedDecompress);
+#if ASS
+    OpenAudioFunc = GetOpenAudio();
+    StopAudioFunc = GetStopAudio();
+    DetourAttach(&(PVOID&)OpenAudioFunc, HookedOpenAudio);
+    DetourAttach(&(PVOID&)StopAudioFunc, HookedStopAudio);
+#endif
     DetourAttach(&TrueCreateFontIndirectA, HookedCreateFontIndirectA);
     DetourAttach(&TrueCreateFileW, HookedCreateFileW);
     DetourAttach(&TrueReadFile, HookedReadFile);
@@ -559,6 +627,10 @@ void Detach() {
     DetourDetach(&sprintfFunc, HookedSprintf);
     DetourDetach(&(PVOID&)DrawTextOnFunc, HookedDrawTextOn);
     DetourDetach(&DecompressFunc, HookedDecompress);
+#if ASS
+    DetourDetach(&(PVOID&)OpenAudioFunc, HookedOpenAudio);
+    DetourDetach(&(PVOID&)StopAudioFunc, HookedStopAudio);
+#endif
     DetourDetach(&TrueCreateFontIndirectA, HookedCreateFontIndirectA);
     DetourDetach(&TrueCreateFileW, HookedCreateFileW);
     DetourDetach(&TrueReadFile, HookedReadFile);

@@ -1,1 +1,3 @@
 option('mpv', type: 'boolean', value: false, description: 'Build with mpv support')
+option('ass', type: 'boolean', value: false, description: 'Build with libass support')
+option('directx_sdk', type: 'string', value: '', description: 'Path to directx sdk')

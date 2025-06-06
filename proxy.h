@@ -1,16 +1,6 @@
-#pragma once
+﻿#pragma once
 #include <windows.h>
-//#include <ctffunc.h>
-#include <d2d1.h>
-#include <d2d1_3.h>
-#include <d3d11.h>
-#include <ddraw.h>
-#include <dsound.h>
-#include <dwrite.h>
-#include <gdiplus.h>
-#include <Mmreg.h>
-#include <msctf.h>
-#include <MSAcm.h>
+#include <d3d9.h>
 
 #include <codecvt>
 #include <cstdlib>
@@ -31,5 +21,5 @@ public:
     static inline HMODULE ProxyModuleHandle{};
     static inline HMODULE OriginalModuleHandle{};
 
-    static inline void* OriginalDirect3DCreate9{};
+    static inline decltype(Direct3DCreate9)* OriginalDirect3DCreate9{};
 };

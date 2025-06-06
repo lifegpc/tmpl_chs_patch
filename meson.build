@@ -25,8 +25,8 @@ cc = meson.get_compiler('c')
 
 MSVC = cc.get_id() == 'msvc'
 if MSVC
-    add_project_arguments('/utf-8', language: 'c')
-    add_project_arguments('/utf-8', language: 'cpp')
+    add_project_arguments('/utf-8', '-D_UNICODE', '-DUNICODE', language: 'c')
+    add_project_arguments('/utf-8', '-D_UNICODE', '-DUNICODE', language: 'cpp')
 endif
 
 if get_option('mpv')
@@ -39,8 +39,30 @@ if get_option('mpv')
     add_project_arguments('-DMPV=1', language: 'cpp')
 endif
 
+sources = files(['dllmain.cpp', 'proxy.h', 'proxy.cpp', 'vfs.hpp', 'vfs.cpp', 'm3t.h', 'm3t.cpp', 'strings_dat.h', 'strings_dat.cpp'])
+
+if get_option('ass')
+    harfbuzz = subproject('harfbuzz', required: true)
+    fribidi = subproject('fribidi', required: true)
+    freetype2 = subproject('freetype2', default_options: ['harfbuzz=enabled'], required: true)
+    libass = subproject('libass', default_options: ['directwrite=enabled'], required: true)
+    libass_dep = libass.get_variable('libass_dep')
+    deps += libass_dep
+    directx_sdk = get_option('directx_sdk')
+    directx= ''
+    if directx_sdk != ''
+        add_project_arguments('-I' + directx_sdk + '/Include', language: 'c')
+        add_project_arguments('-I' + directx_sdk + '/Include', language: 'cpp')
+        directx_lib = directx_sdk + '/Lib/x86'
+    endif
+    deps += cc.find_library('d3dx9', dirs: directx_lib)
+    sources += files(['ass_render.h', 'ass_render.cpp'])
+    add_project_arguments('-DASS=1', language: 'c')
+    add_project_arguments('-DASS=1', language: 'cpp')
+endif
+
 shared_library('d3d9',
-    files(['dllmain.cpp', 'proxy.h', 'proxy.cpp', 'vfs.hpp', 'vfs.cpp', 'm3t.h', 'm3t.cpp', 'strings_dat.h', 'strings_dat.cpp']),
+    sources,
     dependencies: deps,
     name_prefix: '',
     vs_module_defs: 'exports.def',

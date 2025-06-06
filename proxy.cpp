@@ -16,13 +16,7 @@ void Proxy::Init(HMODULE hProxy)
             ExitProcess(0);
         }
     }
-#ifdef _MSVC_VER
-#define RESOLVE(fn) Original##fn = GetProcAddress(OriginalModuleHandle, #fn)
-#else
-#define RESOLVE(fn) Original##fn = (void*)GetProcAddress(OriginalModuleHandle, #fn)
-#endif
-    RESOLVE(Direct3DCreate9);
-#undef RESOLVE
+    OriginalDirect3DCreate9 = (decltype(Direct3DCreate9)*)GetProcAddress(OriginalModuleHandle, "Direct3DCreate9");
 }
 
 #if defined(_WIN64) || !defined(_MSVC_VER)
