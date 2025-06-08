@@ -39,6 +39,11 @@ private:
     std::string m_fileName;
     POINT last_pt;
 
+    uint8_t* m_cachedData = nullptr;
+    int m_cacheWidth = 0;
+    int m_cacheHeight = 0;
+    std::chrono::steady_clock::time_point m_lastCacheTime = std::chrono::steady_clock::now();
+
 public:
     SubtitleRenderer() : m_hwnd(nullptr), m_parentHwnd(nullptr), m_d3d(nullptr),
         m_device(nullptr), m_texture(nullptr), m_surface(nullptr), m_sprite(nullptr),
@@ -66,6 +71,9 @@ public:
 
         m_startTime = std::chrono::steady_clock::now();
         SetActiveWindow(m_parentHwnd);
+
+        // 初始化缓存时间为当前时间减去2秒（确保第一次不使用缓存）
+        m_lastCacheTime = std::chrono::steady_clock::now() - std::chrono::seconds(2);
         return true;
     }
 
@@ -172,6 +180,11 @@ public:
 
         if (FAILED(hr)) return false;
 
+        // 启用更好的过滤
+        m_device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        m_device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+
         // 创建纹理用于字幕渲染
         hr = m_device->CreateTexture(
             m_windowWidth, m_windowHeight, 1, D3DUSAGE_DYNAMIC,
@@ -203,12 +216,13 @@ public:
 
         // 设置渲染参数
         ass_set_frame_size(m_assRenderer, m_windowWidth, m_windowHeight);
-        ass_set_margins(m_assRenderer, 20, 20, 20, 20);
-        ass_set_use_margins(m_assRenderer, 1);
-        ass_set_font_scale(m_assRenderer, 1.0);
+        //ass_set_margins(m_assRenderer, 20, 20, 20, 20);
+        //ass_set_use_margins(m_assRenderer, 1);
+        //ass_set_font_scale(m_assRenderer, 1.0);
+        ass_set_shaper(m_assRenderer, ASS_SHAPING_COMPLEX);
 
         // 设置字体
-        ass_set_fonts(m_assRenderer, nullptr, "sans-serif", 1, nullptr, 1);
+        ass_set_fonts(m_assRenderer, nullptr, nullptr, 1, nullptr, 1);
         ass_set_fonts_dir(m_assLibrary, "fonts");
 
         return true;
@@ -226,8 +240,10 @@ public:
         DWORD readed = 0;
         if (!ReadFile(hFile, buf, fileSize, &readed, NULL)) {
             delete[] buf;
+            CloseHandle(hFile);
             return false;
         }
+        CloseHandle(hFile);
         m_assTrack = ass_read_memory(m_assLibrary, buf, readed, "UTF-8");
         delete[] buf;
         if (!m_assTrack) {
@@ -256,8 +272,8 @@ public:
             // 锁定纹理
             D3DLOCKED_RECT lockedRect;
             if (SUCCEEDED(m_texture->LockRect(0, &lockedRect, nullptr, D3DLOCK_DISCARD))) {
-                // 清空纹理
-                memset(lockedRect.pBits, 0, lockedRect.Pitch * m_windowHeight);
+                // 获取父窗口背景像素填充纹理
+                FillTextureWithParentBackground(lockedRect);
 
                 // 渲染每个字幕图像
                 while (img) {
@@ -293,26 +309,130 @@ public:
         for (int y = 0; y < img->h; y++) {
             if (img->dst_y + y >= m_windowHeight) break;
             if (img->dst_y + y < 0) continue;
+            uint32_t* dst_row = (uint32_t*)(dst + lockedRect.Pitch * (y + img->dst_y));
 
             for (int x = 0; x < img->w; x++) {
                 if (img->dst_x + x >= m_windowWidth) break;
                 if (img->dst_x + x < 0) continue;
-
-                unsigned char alpha = (src[y * img->stride + x] * a) / 255;
-                if (alpha > 0) {
-                    int dstOffset = ((img->dst_y + y) * lockedRect.Pitch) +
-                        ((img->dst_x + x) * 4);
-
-                    dst[dstOffset + 0] = b;     // B
-                    dst[dstOffset + 1] = g;     // G
-                    dst[dstOffset + 2] = r;     // R
-                    dst[dstOffset + 3] = alpha; // A
-                }
+                const unsigned int v = img->bitmap[y * img->stride + x];
+                if (v == 0) continue;
+                int rr = (r * a * v);
+                int gg = (g * a * v);
+                int bb = (b * a * v);
+                int aa = a * v;
+                uint32_t dstpix = dst_row[x + img->dst_x];
+                uint32_t dstb = dstpix & 0xFF;
+                uint32_t dstg = (dstpix >> 8) & 0xFF;
+                uint32_t dstr = (dstpix >> 16) & 0xFF;
+                uint32_t dsta = 0xFF;
+                dstb = (bb + dstb * (255 * 255 - aa)) / (255 * 255);
+                dstg = (gg + dstg * (255 * 255 - aa)) / (255 * 255);
+                dstr = (rr + dstr * (255 * 255 - aa)) / (255 * 255);
+                dsta = (aa * 255 + dsta * (255 * 255 - aa)) / (255 * 255);
+                dst_row[x + img->dst_x] = (dsta << 24) | (dstr << 16) | (dstg << 8) | dstb;
             }
         }
     }
 
+    void FillTextureWithParentBackground(const D3DLOCKED_RECT& lockedRect) {
+        auto now = std::chrono::steady_clock::now();
+        bool cacheValid = m_cachedData && 
+                          m_cacheWidth == m_windowWidth &&
+                          m_cacheHeight == m_windowHeight &&
+                          std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastCacheTime).count() < 1000;
+        if (cacheValid) {
+            // 使用缓存数据填充纹理
+            memcpy(lockedRect.pBits, m_cachedData, lockedRect.Pitch * m_windowHeight);
+            return;
+        }
+        if (!m_cachedData || m_cacheHeight != m_windowHeight || m_cacheWidth != m_windowWidth) {
+            if (m_cachedData) {
+                delete[] m_cachedData;
+                m_cachedData = nullptr;
+            }
+            // 分配新的缓存
+            m_cachedData = new uint8_t[lockedRect.Pitch * m_windowHeight];
+            m_cacheWidth = m_windowWidth;
+            m_cacheHeight = m_windowHeight;
+        }
+        if (!m_parentHwnd) {
+            // 如果没有父窗口，使用透明背景
+            memset(lockedRect.pBits, 0, lockedRect.Pitch * m_windowHeight);
+            return;
+        }
+
+        // 获取父窗口的设备上下文
+        HDC parentDC = GetDC(m_parentHwnd);
+        if (!parentDC) {
+            memset(lockedRect.pBits, 0, lockedRect.Pitch * m_windowHeight);
+            return;
+        }
+
+        // 创建与父窗口兼容的内存DC
+        HDC memDC = CreateCompatibleDC(parentDC);
+        if (!memDC) {
+            ReleaseDC(m_parentHwnd, parentDC);
+            memset(lockedRect.pBits, 0, lockedRect.Pitch * m_windowHeight);
+            return;
+        }
+
+        // 创建位图来存储父窗口像素
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = m_windowWidth;
+        bmi.bmiHeader.biHeight = -m_windowHeight; // 负值表示从上到下
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void* pBits = nullptr;
+        HBITMAP hBitmap = CreateDIBSection(memDC, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
+        if (!hBitmap || !pBits) {
+            DeleteDC(memDC);
+            ReleaseDC(m_parentHwnd, parentDC);
+            memset(lockedRect.pBits, 0, lockedRect.Pitch * m_windowHeight);
+            return;
+        }
+
+        HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, hBitmap);
+
+        // 从父窗口复制像素数据
+        if (BitBlt(memDC, 0, 0, m_windowWidth, m_windowHeight, parentDC, 0, 0, SRCCOPY)) {
+            // 将像素数据复制到纹理，并设置透明度为0（完全透明）
+            uint32_t* srcPixels = (uint32_t*)pBits;
+            uint32_t* dstPixels = (uint32_t*)lockedRect.pBits;
+            
+            for (int y = 0; y < m_windowHeight; y++) {
+                uint32_t* srcRow = srcPixels + y * m_windowWidth;
+                uint32_t* dstRow = (uint32_t*)((char*)dstPixels + y * lockedRect.Pitch);
+                
+                for (int x = 0; x < m_windowWidth; x++) {
+                    uint32_t pixel = srcRow[x];
+                    // 保持RGB分量，但将Alpha设置为0（透明）
+                    dstRow[x] = pixel & 0x00FFFFFF;
+                }
+            }
+            if (m_cachedData) {
+                memcpy(m_cachedData, lockedRect.pBits, lockedRect.Pitch * m_windowHeight);
+                m_lastCacheTime = now; // 更新缓存时间
+            }
+        } else {
+            // BitBlt失败，使用透明背景
+            memset(lockedRect.pBits, 0, lockedRect.Pitch * m_windowHeight);
+        }
+
+        // 清理资源
+        SelectObject(memDC, oldBitmap);
+        DeleteObject(hBitmap);
+        DeleteDC(memDC);
+        ReleaseDC(m_parentHwnd, parentDC);
+    }
+
     void Cleanup() {
+        if (m_cachedData) {
+            delete[] m_cachedData;
+            m_cachedData = nullptr;
+        }
         if (m_sprite) { m_sprite->Release(); m_sprite = nullptr; }
         if (m_texture) { m_texture->Release(); m_texture = nullptr; }
         if (m_device) { m_device->Release(); m_device = nullptr; }
