@@ -351,20 +351,20 @@ HFONT WINAPI HookedCreateFontIndirectA(CONST LOGFONTA* lplf) {
                 lf.lfQuality = lplf->lfQuality;
                 lf.lfPitchAndFamily = lplf->lfPitchAndFamily;
                 if (loaded_chs && tmp == L"ＭＳ ゴシック") {
-                    tmp = loaded_font ? L"Noto Serif CJK SC Bold TMPL" : L"黑体";
+                    tmp = loaded_font ? L"黑体-TMPL" : L"黑体";
                     lf.lfWidth = 0;
                     lf.lfPitchAndFamily = FIXED_PITCH | FF_MODERN;
                     if (lf.lfHeight == 22) {
-                        if (loaded_font) lf.lfHeight = 26;
+                        //if (loaded_font) lf.lfHeight = 26;
                         lf.lfWeight = FW_BOLD;
                     } else if (lf.lfHeight == 16) {
-                        if (loaded_font) lf.lfHeight = 20;
+                        //if (loaded_font) lf.lfHeight = 20;
                         lf.lfWeight = FW_BOLD;
                     } else if (lf.lfHeight == 18) {
-                        if (loaded_font) lf.lfHeight = 22;
+                        //if (loaded_font) lf.lfHeight = 22;
                         lf.lfWeight = FW_BOLD;
                     } else if (lf.lfHeight == 20) {
-                        if (loaded_font) lf.lfHeight = 24;
+                        //if (loaded_font) lf.lfHeight = 24;
                         lf.lfWeight = FW_BOLD;
                     }
                 }
