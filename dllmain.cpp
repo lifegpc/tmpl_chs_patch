@@ -52,6 +52,8 @@ typedef int(__thiscall* StopAudio)(void* thisptr, int index);
 
 static VFS vfs;
 static std::wstring wTitle;
+static DWORD loaded_font;
+static bool loaded_chs;
 static std::unordered_map<std::wstring, std::wstring> dialogMap;
 static std::vector<std::pair<std::wregex, std::wstring>> dialogReList;
 static std::unordered_set<HKEY> phkSet;
@@ -343,26 +345,26 @@ HFONT WINAPI HookedCreateFontIndirectA(CONST LOGFONTA* lplf) {
                 lf.lfItalic = lplf->lfItalic;
                 lf.lfUnderline = lplf->lfUnderline;
                 lf.lfStrikeOut = lplf->lfStrikeOut;
-                lf.lfCharSet = GB2312_CHARSET;
+                lf.lfCharSet = loaded_chs ? GB2312_CHARSET : lplf->lfCharSet;
                 lf.lfOutPrecision = lplf->lfOutPrecision;
                 lf.lfClipPrecision = lplf->lfClipPrecision;
                 lf.lfQuality = lplf->lfQuality;
                 lf.lfPitchAndFamily = lplf->lfPitchAndFamily;
-                if (tmp == L"ＭＳ ゴシック") {
-                    tmp = L"黑体";
+                if (loaded_chs && tmp == L"ＭＳ ゴシック") {
+                    tmp = loaded_font ? L"Noto Serif CJK SC Bold TMPL" : L"黑体";
                     lf.lfWidth = 0;
                     lf.lfPitchAndFamily = FIXED_PITCH | FF_MODERN;
                     if (lf.lfHeight == 22) {
-                        //lf.lfHeight = 26;
+                        if (loaded_font) lf.lfHeight = 26;
                         lf.lfWeight = FW_BOLD;
                     } else if (lf.lfHeight == 16) {
-                        //lf.lfHeight = 20;
+                        if (loaded_font) lf.lfHeight = 20;
                         lf.lfWeight = FW_BOLD;
                     } else if (lf.lfHeight == 18) {
-                        //lf.lfHeight = 22;
+                        if (loaded_font) lf.lfHeight = 22;
                         lf.lfWeight = FW_BOLD;
                     } else if (lf.lfHeight == 20) {
-                        //lf.lfHeight = 24;
+                        if (loaded_font) lf.lfHeight = 24;
                         lf.lfWeight = FW_BOLD;
                     }
                 }
@@ -526,9 +528,12 @@ void Attach() {
     std::string tmp;
     if (wchar_util::wstr_to_str(tmp, path, CP_UTF8)) {
         std::string fName = fileop::filename(tmp) + ".dat";
-        vfs.AddArchive(fName);
+        loaded_chs = vfs.AddArchive(fName);
     }
     vfs.AddArchive("video.dat");
+    if (loaded_chs) {
+        vfs.AddArchive("fonts.dat");
+    }
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
 #if MPV
@@ -614,6 +619,22 @@ void Attach() {
         for (auto i = 0; i < sDat.strings.size(); i += 2) {
             stringsMap[sDat.strings[i]] = sDat.strings[i + 1];
         }
+    }
+    HANDLE fontFile = CreateFileW(L"chs.ttf", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (fontFile != INVALID_HANDLE_VALUE) {
+        DWORD fileSize = GetFileSize(fontFile, NULL);
+        if (fileSize > 0) {
+            char* buf = new char[fileSize];
+            DWORD bytesRead = 0;
+            if (ReadFile(fontFile, buf, fileSize, &bytesRead, NULL) && bytesRead == fileSize) {
+                if (!AddFontMemResourceEx(buf, fileSize, NULL, &loaded_font)) {
+                    loaded_font = 0;
+                    MessageBoxW(NULL, L"Failed to load chs.ttf font.", L"Error", MB_OK | MB_ICONERROR);
+                }
+            }
+            delete[] buf;
+        }
+        CloseHandle(fontFile);
     }
 }
 
