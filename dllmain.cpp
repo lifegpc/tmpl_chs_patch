@@ -39,6 +39,22 @@ static decltype(RegOpenKeyExA)* TrueRegOpenKeyExA = RegOpenKeyExA;
 static decltype(RegCloseKey)* TrueRegCloseKey = RegCloseKey;
 static decltype(RegQueryValueExA)* TrueRegQueryValueExA = RegQueryValueExA;
 
+static bool PatchMemory(void* start, SIZE_T size, void* data, SIZE_T* writed) {
+    HANDLE hProcess = GetCurrentProcess();
+    DWORD oldProtect = 0;
+    if (!VirtualProtectEx(hProcess, start, size, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        return false;
+    }
+    if (!WriteProcessMemory(hProcess, start, data, size, writed)) {
+        return false;
+    }
+    DWORD tmp;
+    if (!VirtualProtectEx(hProcess, start, size, oldProtect, &tmp)) {
+        return false;
+    }
+    return true;
+}
+
 typedef int(__thiscall *DrawTextOn)(void* thisptr, int a, int b, int c, const char* buffer);
 typedef int(__cdecl* Decompress)(void* dest, int* destLen, const void* source, int sourceLen);
 #if MPV
@@ -57,7 +73,6 @@ static bool loaded_chs;
 static std::unordered_map<std::wstring, std::wstring> dialogMap;
 static std::vector<std::pair<std::wregex, std::wstring>> dialogReList;
 static std::unordered_set<HKEY> phkSet;
-static std::unordered_map<std::string, std::string> stringsMap;
 
 static decltype(sprintf)* sprintfFunc = nullptr;
 static DrawTextOn DrawTextOnFunc = nullptr;
@@ -206,46 +221,30 @@ Decompress GetDecompress() {
 
 int __cdecl HookedSprintf(char* buffer, const char* format, ...) {
     va_list args;
-    if (!strcmp(format, "@i%s   ")) {
-        va_list args;
-        va_start(args, format);
-        const char* str = va_arg(args, const char*);
-        va_end(args);
-        std::string s(str);
-        auto find = stringsMap.find(s);
-        if (find != stringsMap.end()) {
-            s = find->second;
-        }
-        return sprintf(buffer, "@i%s", s.c_str());
-    } else if (!strcmp(format, "%s  ")) {
-        va_list args;
-        va_start(args, format);
-        const char* str = va_arg(args, const char*);
-        va_end(args);
-        std::string s(str);
-        auto find = stringsMap.find(s);
-        if (find != stringsMap.end()) {
-            s = find->second;
-        }
-        return sprintf(buffer, "%s", s.c_str());
-    }
     va_start(args, format);
     int ret = vsprintf(buffer, format, args);
     va_end(args);
     return ret;
 }
 
-int __fastcall HookedDrawTextOn(void* thisptr, void* edx, int a, int b, int c, const char* buffer) {
-    if (!strncmp(buffer, "@i", 2)) {
-        std::string s(buffer + 2);
-        auto find = stringsMap.find(s);
-        if (find != stringsMap.end()) {
-            s = find->second;
-        }
-        s = "@i" + s;
-        return DrawTextOnFunc(thisptr, a, b, c, s.c_str());
-    }
-    return DrawTextOnFunc(thisptr, a, b, c, buffer);
+DWORD* GetSceNameTable() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (DWORD*)((char*)hModule + 0xaffc0);
+}
+
+DWORD* GetSceNameTableEnd() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (DWORD*)((char*)hModule + 0xb0450);
+}
+
+DWORD* GetMusicTable() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (DWORD*)((char*)hModule + 0xb0458);
+}
+
+DWORD* GetMusicTableEnd() {
+    HMODULE hModule = GetModuleHandleA(NULL);
+    return (DWORD*)((char*)hModule + 0xb0550);
 }
 
 int __cdecl HookedDecompress(void* dest, int* destLen, const void* source, int sourceLen) {
@@ -522,6 +521,69 @@ LSTATUS WINAPI HookedRegQueryValueExA(HKEY hKey, LPCSTR lpValueName, LPDWORD lpR
     return TrueRegQueryValueExA(hKey, lpValueName, lpReserved, lpType, lpData, lpcbData);
 }
 
+void patch_string_table() {
+    StringsDat eDat(L"strings.dat");
+    if (eDat.hasError) {
+        return;
+    }
+    std::unordered_map<std::string, size_t> map;
+    size_t sSize = 0;
+    for (auto i = 0; i < eDat.strings.size(); i += 2) {
+        map[eDat.strings[i]] = sSize;
+        sSize += eDat.strings[i + 1].size() + 1;
+    }
+    char* buf = new char[sSize];
+    for (auto i = 0; i < eDat.strings.size(); i += 2) {
+        auto size = map[eDat.strings[i]];
+        auto& s = eDat.strings[i + 1];
+        memcpy(buf + size, s.data(), s.size());
+        buf[size + s.size()] = 0;
+    }
+    DWORD* sce_start = GetSceNameTable();
+    DWORD* sce_end = GetSceNameTableEnd();
+    std::vector<DWORD> new_sce;
+    DWORD* now = sce_start;
+    for (; now < sce_end; now++) {
+        char* s = (char*)*now;
+        if (!s) {
+            new_sce.push_back(0);
+            continue;
+        }
+        auto it = map.find(s);
+        DWORD pos = *now;
+        if (it != map.end()) {
+            pos = (*it).second + (DWORD)buf;
+        }
+        new_sce.push_back(pos);
+    }
+    SIZE_T size = (char*) sce_end - (char*) sce_start;
+    if (!PatchMemory(sce_start, size, new_sce.data(), NULL)) {
+        MessageBoxW(NULL, L"应用场景名失败，存档页面可能有乱码。", L"警告", MB_OK);
+    }
+    DWORD* music_start = GetMusicTable();
+    DWORD* music_end = GetMusicTableEnd();
+    std::vector<DWORD> new_music;
+    now = music_start;
+    for (; now < music_end; now += 2) {
+        new_music.push_back(*now);
+        char* s = (char*)*(now + 1);
+        if (!s) {
+            new_music.push_back(0);
+            continue;
+        }
+        auto it = map.find(s);
+        DWORD pos = *(now + 1);
+        if (it != map.end()) {
+            pos = (*it).second + (DWORD)buf;
+        }
+        new_music.push_back(pos);
+    }
+    size = (char*)music_end - (char*)music_start;
+    if (!PatchMemory(music_start, size, new_music.data(), NULL)) {
+        MessageBoxW(NULL, L"应用音乐名失败，音乐列表可能有乱码。", L"警告", MB_OK);
+    }
+}
+
 void Attach() {
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(NULL, path, MAX_PATH);
@@ -546,7 +608,6 @@ void Attach() {
     DrawTextOnFunc = GetDrawTextOn();
     DecompressFunc = GetDecompress();
     DetourAttach(&sprintfFunc, HookedSprintf);
-    DetourAttach(&(PVOID&)DrawTextOnFunc, HookedDrawTextOn);
     DetourAttach(&DecompressFunc, HookedDecompress);
 #if ASS
     OpenAudioFunc = GetOpenAudio();
@@ -614,12 +675,6 @@ void Attach() {
             }
         }
     }
-    StringsDat sDat(L"strings.dat");
-    if (!sDat.hasError) {
-        for (auto i = 0; i < sDat.strings.size(); i += 2) {
-            stringsMap[sDat.strings[i]] = sDat.strings[i + 1];
-        }
-    }
     HANDLE fontFile = CreateFileW(L"chs.ttf", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (fontFile != INVALID_HANDLE_VALUE) {
         DWORD fileSize = GetFileSize(fontFile, NULL);
@@ -636,6 +691,27 @@ void Attach() {
         }
         CloseHandle(fontFile);
     }
+    if (loaded_chs) {
+        patch_string_table();
+    }
+    // FILE* tmpf = fileop::fopen("sce_name_table.txt", "wb");
+    // if (tmpf) {
+    //     DWORD* now = GetSceNameTable();
+    //     DWORD* end = GetSceNameTableEnd();
+    //     for (; now < end; now++) {
+    //         fprintf(tmpf, "0x%08x: %s\n", *now, (const char*)*now);
+    //     }
+    //     fileop::fclose(tmpf);
+    // }
+    // tmpf = fileop::fopen("music_table.txt", "wb");
+    // if (tmpf) {
+    //     DWORD* now = GetMusicTable();
+    //     DWORD* end = GetMusicTableEnd();
+    //     for (; now < end; now += 2) {
+    //         fprintf(tmpf, "%02d, 0x%08x: %s\n", *now, *(now + 1), (const char*)*(now + 1));
+    //     }
+    //     fileop::fclose(tmpf);
+    // }
 }
 
 void Detach() {
@@ -646,7 +722,6 @@ void Detach() {
     DetourDetach(&ReleaseMediaFunc, HookedReleaseVideo);
 #endif
     DetourDetach(&sprintfFunc, HookedSprintf);
-    DetourDetach(&(PVOID&)DrawTextOnFunc, HookedDrawTextOn);
     DetourDetach(&DecompressFunc, HookedDecompress);
 #if ASS
     DetourDetach(&(PVOID&)OpenAudioFunc, HookedOpenAudio);

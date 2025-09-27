@@ -54,8 +54,10 @@ if get_option('ass')
         add_project_arguments('-I' + directx_sdk + '/Include', language: 'c')
         add_project_arguments('-I' + directx_sdk + '/Include', language: 'cpp')
         directx_lib = directx_sdk + '/Lib/x86'
+        deps += cc.find_library('d3dx9', dirs: directx_lib)
+    else
+        deps += cc.find_library('d3dx9')
     endif
-    deps += cc.find_library('d3dx9', dirs: directx_lib)
     sources += files(['ass_render.h', 'ass_render.cpp'])
     add_project_arguments('-DASS=1', language: 'c')
     add_project_arguments('-DASS=1', language: 'cpp')
