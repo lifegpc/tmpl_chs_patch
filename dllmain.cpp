@@ -16,7 +16,9 @@
 #endif
 #include "strings_dat.h"
 #include "zlib.h"
+#if WITH_ZSTD
 #include "zstd.h"
+#endif
 #if ASS
 #include "ass_render.h"
 #endif
@@ -214,10 +216,12 @@ DrawTextOn GetDrawTextOn() {
     return (DrawTextOn)((char*)hModule + 0x36600);
 }
 
+#if WITH_ZSTD
 Decompress GetDecompress() {
     HMODULE hModule = GetModuleHandleA(NULL);
     return (Decompress)((char*)hModule + 0x73f70);
 }
+#endif
 
 int __cdecl HookedSprintf(char* buffer, const char* format, ...) {
     va_list args;
@@ -247,6 +251,7 @@ DWORD* GetMusicTableEnd() {
     return (DWORD*)((char*)hModule + 0xb0550);
 }
 
+#if WITH_ZSTD
 int __cdecl HookedDecompress(void* dest, int* destLen, const void* source, int sourceLen) {
     if (dest && destLen && source && sourceLen > 0) {
         if (((const char*)source)[0] != 0x28) {
@@ -279,6 +284,7 @@ int __cdecl HookedDecompress(void* dest, int* destLen, const void* source, int s
     
     return Z_STREAM_ERROR;
 }
+#endif
 
 #if ASS
 OpenAudio GetOpenAudio() {
@@ -591,9 +597,13 @@ void Attach() {
     if (wchar_util::wstr_to_str(tmp, path, CP_UTF8)) {
         std::string fName = fileop::filename(tmp) + ".dat";
         loaded_chs = vfs.AddArchive(fName);
+        if (!loaded_chs) {
+            auto hModule = GetModuleHandleA(NULL);
+            loaded_chs = vfs.AddArchiveFromResource(hModule, L"DATA", L"DATA");
+        }
     }
-    vfs.AddArchive("video.dat");
     if (loaded_chs) {
+        vfs.AddArchive("video.dat");
         vfs.AddArchive("fonts.dat");
     }
     DetourTransactionBegin();
@@ -606,9 +616,13 @@ void Attach() {
 #endif
     sprintfFunc = GetSprintf();
     DrawTextOnFunc = GetDrawTextOn();
+#if WITH_ZSTD
     DecompressFunc = GetDecompress();
+#endif
     DetourAttach(&sprintfFunc, HookedSprintf);
+#if WITH_ZSTD
     DetourAttach(&DecompressFunc, HookedDecompress);
+#endif
 #if ASS
     OpenAudioFunc = GetOpenAudio();
     StopAudioFunc = GetStopAudio();
@@ -722,7 +736,9 @@ void Detach() {
     DetourDetach(&ReleaseMediaFunc, HookedReleaseVideo);
 #endif
     DetourDetach(&sprintfFunc, HookedSprintf);
+#if WITH_ZSTD
     DetourDetach(&DecompressFunc, HookedDecompress);
+#endif
 #if ASS
     DetourDetach(&(PVOID&)OpenAudioFunc, HookedOpenAudio);
     DetourDetach(&(PVOID&)StopAudioFunc, HookedStopAudio);

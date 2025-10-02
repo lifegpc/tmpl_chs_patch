@@ -1,4 +1,4 @@
-#include "zip.h"
+﻿#include "zip.h"
 #include <list>
 #include <string>
 #include <unordered_map>
@@ -32,6 +32,7 @@ class VFS {
         VFS();
         ~VFS();
         bool AddArchive(std::string path, bool inMem = false);
+        bool AddArchiveFromResource(HMODULE hModule, LPCWSTR rcType, LPCWSTR rcName, bool inMem = false);
         bool AddArchiveFromResource(HMODULE hModule, int resourceID, bool inMem = false);
         void AddArchiveWithErrorMsg(std::string path, bool inMem = false);
         void AddArchiveFromResourceWithErrorMsg(HMODULE hModule, int resourceID, bool inMem = false);

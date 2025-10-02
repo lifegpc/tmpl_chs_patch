@@ -79,8 +79,8 @@ bool VFS::AddArchive(std::string path, bool inMem) {
     return true;
 }
 
-bool VFS::AddArchiveFromResource(HMODULE hModule, int resourceID, bool inMem) {
-    HRSRC hResInfo = FindResource(hModule, MAKEINTRESOURCE(resourceID), RT_RCDATA);
+bool VFS::AddArchiveFromResource(HMODULE hModule, LPCWSTR rcType, LPCWSTR rcName, bool inMem) {
+    HRSRC hResInfo = FindResourceW(hModule, rcName, rcType);
     if (!hResInfo) return false;
     HGLOBAL hResData = LoadResource(hModule, hResInfo);
     if (!hResData) return false;
@@ -112,6 +112,10 @@ bool VFS::AddArchiveFromResource(HMODULE hModule, int resourceID, bool inMem) {
         inMemArchives.insert(archive);
     }
     return true;
+}
+
+bool VFS::AddArchiveFromResource(HMODULE hModule, int resourceID, bool inMem) {
+    return VFS::AddArchiveFromResource(hModule, MAKEINTRESOURCEW(resourceID), MAKEINTRESOURCEW(10), inMem);
 }
 
 void VFS::AddArchiveWithErrorMsg(std::string path, bool inMem) {

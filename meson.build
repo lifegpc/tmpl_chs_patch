@@ -5,20 +5,17 @@ zlib = subproject('zlib', required: true)
 libzip = subproject('libzip', required: true)
 utils = subproject('utils', required: true)
 detours = subproject('detours', required: true)
-zstd = subproject('zstd', required: true)
 
 zlib_dep = zlib.get_variable('zlib_dep')
 libzip_dep = libzip.get_variable('libzip_dep')
 utils_dep = utils.get_variable('utils_dep')
 detours_dep = detours.get_variable('detours_dep')
-zstd_dep = zstd.get_variable('libzstd_dep')
 
 deps = [
     zlib_dep,
     libzip_dep,
     utils_dep,
     detours_dep,
-    zstd_dep,
 ]
 
 cc = meson.get_compiler('c')
@@ -27,6 +24,14 @@ MSVC = cc.get_id() == 'msvc'
 if MSVC
     add_project_arguments('/utf-8', '-D_UNICODE', '-DUNICODE', language: 'c')
     add_project_arguments('/utf-8', '-D_UNICODE', '-DUNICODE', language: 'cpp')
+endif
+
+if get_option('zstd')
+    zstd = subproject('zstd', required: true)
+    zstd_dep = zstd.get_variable('libzstd_dep')
+    deps += zstd_dep
+    add_project_arguments('-DWITH_ZSTD=1', language: 'c')
+    add_project_arguments('-DWITH_ZSTD=1', language: 'cpp')
 endif
 
 if get_option('mpv')
