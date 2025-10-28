@@ -605,6 +605,7 @@ void Attach() {
     if (loaded_chs) {
         vfs.AddArchive("video.dat");
         vfs.AddArchive("fonts.dat");
+        vfs.AddArchive("images.dat");
     }
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
